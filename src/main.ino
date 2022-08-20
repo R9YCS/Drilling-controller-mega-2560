@@ -1,8 +1,8 @@
 /*
 Код для mega 2560
 Раздельное сверление и управление шаговиками
+Есть поддержка энкодера
 */
-
 #include "GyverStepper2.h"
 #include "GyverButton.h"
 #include "GyverTimers.h"
