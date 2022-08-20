@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"path": "..\\..\\..\\..\\Arduino\\libraries"
+		},
+		{
+			"name": "LCD0802_B",
+			"path": "..\\..\\LCD0802_B"
+		},
+		{
+			"name": "220126-160751-nanoatmega328",
+			"path": "..\\..\\220126-160751-nanoatmega328"
+		},
+		{
+			"name": "Drilling controller",
+			"path": ".."
+		}
+	],
+	"settings": {
+		"css.customData": [
+		]
+		
+		"arduino.path": "C:\\Users\\Denis\\Desktop\\Проги\\arduino-1.8.16",
+			"arduino.commandPath": "arduino.exe"
+	}
+}
