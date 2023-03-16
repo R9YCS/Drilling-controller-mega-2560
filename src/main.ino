@@ -1,13 +1,14 @@
 /*
 Код для mega 2560
-Совместное сверление и управление шаговиками, с ожиданием при сверлении
-Нет поддержки энкодера
+Раздельное сверление и управление шаговиками
 */
+
 #include "GyverStepper2.h"
 #include "GyverButton.h"
 #include "GyverTimers.h"
 #include <LiquidCrystal.h>
 #include "EepromCell.h"
+#include <EncButton2.h>
 
 LiquidCrystal lcd(7, 6, 5, 4, 3, 2);
 
@@ -15,19 +16,26 @@ GStepper2<STEPPER2WIRE> stepperL(3200, 8, 10, 9);   // Левый мотор
 GStepper2<STEPPER2WIRE> stepperR(3200, 18, 19, 17); // Правый мотор
 
 #define BTNL 15      // PIN - для левой кнопки
-#define BTNE 12      // PIN - для ОК
+#define BTNE 40      // PIN - для ОК
 #define BTNR 11      // PIN - для правой кнопки
 #define ENDCAP_L 14  // PIN - для левого концевика
 #define ENDCAP_R 16  // PIN - для правого коцневика
-#define SpindleS 20  // PIN - для реле шпинделя
+// #define SpindleS 20  // PIN - для реле шпинделя---
+#define SpindleLEFT 30  // PIN - для реле шпинделя
+#define SpindleRIGHT 31  // PIN - для реле шпинделя
+#define LedStart 25  // PIN - Подсветка START
+#define LedStop 24  // PIN - Подсветка STOP
+#define LockMenu 12  // PIN - Свитч для блокировки части меню
 
-GButton Left(BTNL);
+GButton StartButton(BTNL);
 GButton Enter(BTNE);
-GButton Right(BTNR);
+GButton StopButton(BTNR);
+
+EncButton2<EB_ENCBTN> enc(INPUT_PULLUP, 21, 22, 23);  // энкодер с кнопкой
 
 EepromCell Acceleration(500, 0);              // Ускорения
 EepromCell MaxSpeed(500, 5);                  // Скорость
-EepromCell depthL(100, 10);                    // Глубина сверления левый
+EepromCell depthL(100, 10);                   // Глубина сверления левый
 EepromCell depthR(100, 15);                   // Глубина сверления правый  
 EepromCell MaxReturnSpeed(500, 20);           // Скорость возврата после сверления
 EepromCell Tmr_err(10000, 24);                // Время поиска концевика до ошибки
@@ -43,21 +51,34 @@ bool stepperEndCapL;
 bool stepperEndCapR;
 bool EndCapStatL;
 bool EndCapStatR;
-bool Spindle;           // Включение шпинделя
+bool SpindleLeft;           // Включение шпинделя
+bool SpindleRight;           // Включение шпинделя
 bool SpindleStat;
 bool dirBoolL;
 bool dirBoolR;
+
+      bool leftEngineParking = 0; 
+      bool rightEngineParking = 0; 
+      bool leftEngineDoneDrilling = 0; 
+      bool rightEngineDoneDrilling = 0; 
+      bool stopFlag = 0;
+
+
+bool StartFlag = false;
 
 char WorkID;
 
 uint32_t LcdRef;  // Таймеры
 uint32_t Tmr;     // Таймеры
+uint32_t BtnTmr;     // Таймеры
+bool buttonBlink = 0;
 
 char const n = 5;
 int steps [n] = {10, 50,  100, 500, 1000};
 int stepIndex;
 int ErrNum;
 char const NumMenu = 12;
+int NumMenuLock;
 int CurrentMenu = 0;
 const char *NameMenu[NumMenu] = {
   "Depth L",
@@ -73,17 +94,18 @@ const char *NameMenu[NumMenu] = {
   "Error dis. park.",
   "= Steps / Dis."
 };
-char const NumStat = 9;
+char const NumStat = 10;
 const char *Stat[NumStat] = {
-  "P L",
-  "P R",
-  "DRILL",
-  "BK L",
-  "P BL",
-  "BK R",
-  "P BR",
-  "DONE",
-  "ERR"
+  "P L",  // 0
+  "P R",  // 1
+  "DRIL", // 2
+  "BK L", // 3 
+  "PB L", // 4
+  "DR R", // 5
+  "BK R", // 6
+  "DONE", // 7
+  "ERR", // 8
+  "ERR"   // 9
 };
 char const OnOff = 2;
 const char *StatBool[OnOff] = {
@@ -119,13 +141,17 @@ ModeMenu modemenu = NoMode;
 
 void setup() {
 
-  Serial.begin(9600);
+  // Serial.begin(9600);
 
   lcd.begin(16, 2);
 
   pinMode(ENDCAP_L, INPUT_PULLUP);
   pinMode(ENDCAP_R, INPUT_PULLUP);
-  pinMode(SpindleS, OUTPUT);
+  pinMode(LockMenu, INPUT_PULLUP);
+  pinMode(SpindleLEFT, OUTPUT);
+  pinMode(SpindleRIGHT, OUTPUT);
+  pinMode(LedStart, OUTPUT);
+  pinMode(LedStop, OUTPUT);
 
 //  Acceleration.setValue(0);
 //  MaxSpeed.setValue(0);
@@ -171,9 +197,17 @@ void setup() {
   Timer2.enableISR();
 }
 ISR(TIMER2_A) {
-  stepperL.tick();
-  stepperR.tick();
-
+  if(!stopFlag) {
+    stepperL.tick();
+    stepperR.tick();
+    digitalWrite(LedStop, false);
+  } else {
+    digitalWrite(LedStop, true);
+    digitalWrite(LedStart, false);
+    digitalWrite(SpindleLEFT, true);
+    digitalWrite(SpindleRIGHT, true);
+  }
+  
 }
 void drilling() {
 
@@ -216,7 +250,10 @@ void drilling() {
     lcd.print(EndCapStatR);
 
     lcd.setCursor(12, 0);
-    lcd.print(SpindleStat);
+    lcd.print(SpindleLeft);
+    
+    lcd.setCursor(13, 0);
+    lcd.print(SpindleRight);
   }
 
   if (WorkID == 0) {          //  Парковка левого двигателя
@@ -235,7 +272,7 @@ void drilling() {
         ErrNum = 0;
       }
     }
-    if (Enter.isSingle()) {
+    if (Enter.isSingle() || enc.held() || enc.click() || StopButton.isSingle()) {
       WorkID = 8;
       ErrNum = 9;
     }
@@ -256,13 +293,15 @@ void drilling() {
         ErrNum = 1;
       }
     }
-    if (Enter.isSingle()) {
+    if (Enter.isSingle() || enc.held() || enc.click() || StopButton.isSingle()) {
       WorkID = 8;
       ErrNum = 9;
     }
   }
 
   if (WorkID == 2) {          //  Сверление
+    
+    digitalWrite(LedStart, true);
 
     if ((digitalRead(ENDCAP_L)) && (((stepperL.pos) * dirL.value()) > (parkingErrorDistance.value() * disSteps.value()))) {
       WorkID = 8;
@@ -272,141 +311,185 @@ void drilling() {
       ErrNum = 3;
     }
 
-    stepperL.enable();                               
-    stepperL.setAcceleration(Acceleration.value() * disSteps.value());
-    stepperL.setMaxSpeed(MaxSpeed.value() * disSteps.value());
-    stepperL.setTarget(dirL.value() * (depthL.value() * disSteps.value()));
-
-    stepperR.enable();
-    stepperR.setAcceleration(Acceleration.value() * disSteps.value());
-    stepperR.setMaxSpeed(MaxSpeed.value() * disSteps.value());
-    stepperR.setTarget(dirR.value() * (depthR.value() * disSteps.value()));
-
-    Spindle = true; 
-    
-    if (((stepperL.pos * dirL.value()) >= (depthL.value() * disSteps.value())) && ((stepperR.pos * dirR.value()) >= (depthR.value() * disSteps.value()))) {
-      WorkID = 3;
+    if (leftEngineDoneDrilling == 0) {
+      SpindleLeft = true; 
+      stepperL.enable();  
+      stepperL.setAcceleration(Acceleration.value() * disSteps.value());
+      stepperL.setMaxSpeed(MaxSpeed.value() * disSteps.value());
+      stepperL.setTarget(dirL.value() * (depthL.value() * disSteps.value()));
     }
-    if (Enter.isSingle()) {
-      WorkID = 8;
-      ErrNum = 9;
-    }
-  }
-
-  if (WorkID == 3) {          //  Возврат левого двигателя
-
-    stepperL.setAcceleration(Acceleration.value() * disSteps.value());
-    stepperL.setMaxSpeed(MaxReturnSpeed.value() * disSteps.value());
-    stepperL.setTarget((((depthL.value() * disSteps.value()) / 5)) * (dirL.value()));
-    if (dirL.value() <= 0) {
-      if ((stepperL.pos) >= ((((depthL.value() * disSteps.value()) / 5) ) * (dirL.value()))) {
-      Tmr = millis();
-      WorkID = 4;
-      }
-    } else {
-      if ((stepperL.pos) <= ((((depthL.value() * disSteps.value()) / 5) ) * (dirL.value()))) {
-      Tmr = millis();
-      WorkID = 4;
-      }
-    }
-    
-
-    if (digitalRead(ENDCAP_L)) {
-      stepperL.setTarget(0);
-      stepperL.brake();
-      stepperL.reset();
-      WorkID = 5;
-      stepperEndCapL = 0;
-    }
-    if (Enter.isSingle()) {
-      WorkID = 8;
-      ErrNum = 9;
-    }
-  }
-
-  if (WorkID == 4) {          //  Парковка левого двигателя
-
-    if (digitalRead(ENDCAP_L)) {
-      WorkID = 5;
-      Tmr = millis();
-      stepperL.brake();
-      stepperL.reset();
-    } else {
-      stepperL.enable();
-      stepperL.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirL.value()));
-      
-      if (millis() - Tmr >= Tmr_err.value()) {
-        WorkID = 8;
-        ErrNum = 4;
-      }
-    }
-    if (Enter.isSingle()) {
-      WorkID = 8;
-      ErrNum = 9;
-    }
-  }
-
-  if (WorkID == 5) {          //  Возврат правого двигателя
-
-    stepperR.setAcceleration(Acceleration.value() * disSteps.value());
-    stepperR.setMaxSpeed(MaxReturnSpeed.value() * disSteps.value());
-    stepperR.setTarget((((depthR.value() * disSteps.value()) / 5) ) * (dirR.value()));
-
-    if (dirR.value() <= 0) {
-      if ((stepperR.pos) >= ((((depthR.value() * disSteps.value()) / 5) ) * (dirR.value()))) {
-      Tmr = millis();
-      WorkID = 6;
-      }
-    } else {
-      if ((stepperR.pos) <= ((((depthR.value() * disSteps.value()) / 5) ) * (dirR.value()))) {
-      Tmr = millis();
-      WorkID = 6;
-      }
-    }
-
-    if (digitalRead(ENDCAP_R)) {
-      stepperR.setTarget(0);
-      stepperR.brake();
-      stepperR.reset();
-      WorkID = 7;
-      stepperEndCapR = 0;
-    }
-    if (Enter.isSingle()) {
-      WorkID = 8;
-      ErrNum = 9;
-    }
-  }
-
-  if (WorkID == 6) {          //  Парковка правого двигателя
-
-   if (digitalRead(ENDCAP_R)) {
-      WorkID = 7;
-      stepperR.brake();
-      stepperR.reset();
-    } else {
+    if (rightEngineDoneDrilling == 0) {
+      SpindleRight = true; 
       stepperR.enable();
-      stepperR.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirR.value()));
+      stepperR.setAcceleration(Acceleration.value() * disSteps.value());
+      stepperR.setMaxSpeed(MaxSpeed.value() * disSteps.value());
+      stepperR.setTarget(dirR.value() * (depthR.value() * disSteps.value()));
+    }
 
-      if (millis() - Tmr >= Tmr_err.value()) {
-        WorkID = 8;
-        ErrNum = 5;
+    
+    
+
+    if ((stepperL.pos * dirL.value()) >= (depthL.value() * disSteps.value())) {
+      leftEngineDoneDrilling = 1;
+      SpindleLeft = false;
+      Tmr = millis();
+    }
+    if ((stepperR.pos * dirR.value()) >= (depthR.value() * disSteps.value())) {
+      SpindleRight = false;
+      rightEngineDoneDrilling = 1;
+      Tmr = millis();
+    }
+
+    if (leftEngineDoneDrilling == 1 && leftEngineParking == 0) { // Возврат левого
+      
+      stepperL.setAcceleration(Acceleration.value() * disSteps.value());
+      stepperL.setMaxSpeed(MaxReturnSpeed.value() * disSteps.value());
+      stepperL.setTarget((depthL.value() * disSteps.value()) * (dirL.value()));
+
+      if (dirL.value() <= 0) {
+        if ( (stepperL.pos) >= ( (depthL.value() * disSteps.value() ) * (dirL.value() ) ) ) {
+          if (digitalRead(ENDCAP_L)) {
+            leftEngineParking = 1;
+            Tmr = millis();
+            stepperL.brake();
+            stepperL.reset();
+          } else {
+            stepperL.enable();
+            stepperL.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirL.value()));
+            if (millis() - Tmr >= Tmr_err.value()) {
+              WorkID = 8;
+              ErrNum = 4;
+            }
+          }
+        }
+      } else {
+        if ((stepperL.pos) <= ((((depthL.value() * disSteps.value())) ) * (dirL.value()))) {
+          if (digitalRead(ENDCAP_L)) {
+            leftEngineParking = 1;
+            Tmr = millis();
+            stepperL.brake();
+            stepperL.reset();
+          } else {
+            stepperL.enable();
+            stepperL.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirL.value()));
+              if (millis() - Tmr >= Tmr_err.value()) {
+                WorkID = 8;
+                ErrNum = 4;
+              }
+            }
+        }
       }
     }
-    if (Enter.isSingle()) {
+
+    if (rightEngineDoneDrilling == 1 && rightEngineParking == 0) { // Возврат правого
+    
+      stepperR.setAcceleration(Acceleration.value() * disSteps.value());
+      stepperR.setMaxSpeed(MaxReturnSpeed.value() * disSteps.value());
+      stepperR.setTarget((((depthR.value() * disSteps.value())) ) * (dirR.value()));
+
+      if (dirR.value() <= 0) {
+        if ((stepperR.pos) >= ((((depthR.value() * disSteps.value())) ) * (dirR.value()))) {
+          if (digitalRead(ENDCAP_R)) {
+            rightEngineParking = 1;
+            stepperR.setTarget(0);
+            stepperR.brake();
+            stepperR.reset();
+          } else {
+            stepperR.enable();
+            stepperR.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirR.value()));
+
+            if (millis() - Tmr >= Tmr_err.value()) {
+              WorkID = 8;
+              ErrNum = 5;
+            }
+          }
+        }
+      } else {
+        if ((stepperR.pos) <= ((((depthR.value() * disSteps.value())) ) * (dirR.value()))) {
+          if (digitalRead(ENDCAP_R)) {
+            rightEngineParking = 1;
+            stepperR.setTarget(0);
+            stepperR.brake();
+            stepperR.reset();
+          } else {
+            stepperR.enable();
+            stepperR.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirR.value()));
+            if (millis() - Tmr >= Tmr_err.value()) {
+              WorkID = 8;
+              ErrNum = 5;
+            }
+          }
+        }
+      }
+    }
+  
+    if ((leftEngineParking == 1) && (rightEngineParking == 1)) {
+      WorkID = 7;
+      SpindleLeft = false;
+      SpindleRight = false;
+    }
+    if (enc.held() || enc.click()) {
       WorkID = 8;
       ErrNum = 9;
     }
+    stopFlag = StopButton.isClick();
+    while(stopFlag) {
+      StopButton.tick();
+      StartButton.tick();
+      stopFlag = !StartButton.isClick();
+    }  
   }
+
+  // if (WorkID == 3) {          //  Возврат левого двигателя
+
+  //   if (Enter.isSingle()) {
+  //     WorkID = 8;
+  //     ErrNum = 9;
+  //   }
+  // }
+
+  // if (WorkID == 4) {          //  Парковка левого двигателя
+
+    
+  //   if (Enter.isSingle()) {
+  //     WorkID = 8;
+  //     ErrNum = 9;
+  //   }
+  // }
+
+  // if (WorkID == 5) {          //  Возврат правого двигателя
+
+    
+  //   if (Enter.isSingle()) {
+  //     WorkID = 8;
+  //     ErrNum = 9;
+  //   }
+  // }
+
+  // if (WorkID == 6) {          //  Парковка правого двигателя
+
+
+  //   if (Enter.isSingle()) {
+  //     WorkID = 8;
+  //     ErrNum = 9;
+  //   }
+  // }
 
   if (WorkID == 7) {          //  Завершение операции
 
     stepperL.disable();
     stepperR.disable();
-    Spindle = false;
+    leftEngineDoneDrilling = 0;
+    rightEngineDoneDrilling = 0;
+    leftEngineParking = 0;
+    rightEngineParking = 0;
 
-    if ((WorkID == 7) & (Enter.isSingle())) {
-      mode = Wait;
+    SpindleLeft = false;
+    SpindleRight = false;
+
+    if (WorkID == 7 && (StartButton.isClick() || enc.click()) ) {
       WorkID = 0;
+      mode = Wait;
     }
   }
 
@@ -416,20 +499,39 @@ void drilling() {
     stepperL.disable();
     stepperR.brake();
     stepperR.disable();
-    Spindle = false;
+    SpindleLeft = false;
+    SpindleRight = false;
+
+    unsigned long ms = millis();
+    if(ms - BtnTmr >= 500) {
+      BtnTmr = ms;
+      if (!buttonBlink) {
+        buttonBlink = 1;
+      } else 
+        buttonBlink = 0;
+    }
+    digitalWrite(LedStart, buttonBlink);
 
     lcd.setCursor(15, 1);
     lcd.print(ErrNum);
     
-    if (Enter.isDouble()) {
-      WorkID = 0;
-      mode = Wait;
+    if (enc.held()) {
+      WorkID = 7;
+      // mode = Wait;
     }
   }
 
 }
 void wait() {
 
+  if (StartFlag == false) {
+    lcd.setCursor(2, 0);
+    lcd.print("Drilling MCU");
+    lcd.setCursor(1, 1); 
+    lcd.print("Ver. 1.4.0 JD");
+    delay(1500);
+    StartFlag = true;
+  } else {
   if (millis() - LcdRef >= 200) {
     LcdRef = millis();
     lcd.clear();
@@ -467,20 +569,27 @@ void wait() {
     lcd.print(EndCapStatR);
 
     lcd.setCursor(12, 0);
-    lcd.print(Spindle);
+    lcd.print(SpindleLeft);
+    
+    lcd.setCursor(13, 0);
+    lcd.print(SpindleRight);
   }
-
+  
   stepperL.disable();
   stepperR.disable();
-  Spindle = false;
+  SpindleLeft = false;
+  SpindleRight = false;
   
-  if (Enter.isSingle()) {
+  digitalWrite(LedStart, false);
+
+  if (enc.click()) {
     mode = Menu;
   }
-  if (Enter.isHold()) {
+  if (StartButton.isHold()) {
     mode = Drilling;
     Tmr = millis();
   }
+}
 }
 void error() {
 
@@ -611,21 +720,21 @@ void menu() {
         }
           
       }
-      if ((Right.isPress()) || (Right.isStep())) {
-        if (CurrentMenu < NumMenu - 1)
+      if ((enc.right())) {
+        if (CurrentMenu < NumMenuLock - 1)
           CurrentMenu = CurrentMenu + 1;
         else
           CurrentMenu = 0;
-      } else if ((Left.isPress()) || (Left.isStep())) {
+      } else if (enc.left()) {
         if (CurrentMenu != 0)
           CurrentMenu = CurrentMenu - 1;
         else
-          CurrentMenu = NumMenu - 1;
+          CurrentMenu = NumMenuLock - 1;
       }
-      if (Enter.isSingle()) {
+      if (Enter.isSingle() || (enc.click())) {
         modemenu = ModeMenu(CurrentMenu);
       }
-      if (Enter.isDouble()) {
+      if (Enter.isDouble() || (enc.step())) {
         mode = Wait;
       }
       break;
@@ -647,19 +756,19 @@ void depthFL() {
     lcd.print(steps[stepIndex]);
     depthL.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     depthL.setValue(depthL.value() + (steps[stepIndex]));
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if (enc.left()) {
     depthL.setValue(depthL.value() - (steps[stepIndex]));
   }
   if (depthL.value() < 0) depthL.setValue(0);
-  if (Enter.isSingle()) {
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 0;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 
@@ -677,19 +786,21 @@ void depthFR() {
     lcd.print(steps[stepIndex]);
     depthR.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if (enc.right()) {
     depthR.setValue(depthR.value() + (steps[stepIndex]));
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if (enc.left()) {
     depthR.setValue(depthR.value() - (steps[stepIndex]));
   }
-  if (depthR.value() < 0) depthR.setValue(0);
-  if (Enter.isSingle()) {
+  if (depthR.value() < 0) {
+    depthR.setValue(0);
+  }
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 0;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 
@@ -707,19 +818,19 @@ void accel() {
     lcd.print(steps[stepIndex]);
     Acceleration.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     Acceleration.setValue(Acceleration.value() + steps[stepIndex]);
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     Acceleration.setValue(Acceleration.value() - steps[stepIndex]);
   }
   if (Acceleration.value() < 10) Acceleration.setValue(10);
-  if (Enter.isSingle()) {
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 0;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -736,19 +847,19 @@ void speedF() {
     lcd.print(steps[stepIndex]);
     MaxSpeed.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     MaxSpeed.setValue(MaxSpeed.value() + (steps[stepIndex]));
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     MaxSpeed.setValue(MaxSpeed.value() - (steps[stepIndex]));
   }
   if (MaxSpeed.value() < 10) MaxSpeed.setValue(10);
-  if (Enter.isSingle()) {
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 0;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -765,19 +876,19 @@ void reSpeed() {
     lcd.print(steps[stepIndex]);
     MaxReturnSpeed.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     MaxReturnSpeed.setValue(MaxReturnSpeed.value() + (steps[stepIndex]));
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     MaxReturnSpeed.setValue(MaxReturnSpeed.value() - (steps[stepIndex]));
   }
   if (MaxReturnSpeed.value() < 10) MaxReturnSpeed.setValue(10);
-  if (Enter.isSingle()) {
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 0;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -790,13 +901,13 @@ void spinldeB() {
     lcd.print(StatBool[SpindleBlock.value()]);
     SpindleBlock.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     SpindleBlock.setValue(false);
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     SpindleBlock.setValue(true);
   }
   
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -813,20 +924,20 @@ void timerError() {
     lcd.print((steps[stepIndex] / 100));
     Tmr_err.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     Tmr_err.setValue(Tmr_err.value() + (steps[stepIndex] * 10));
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     Tmr_err.setValue(Tmr_err.value() - (steps[stepIndex] * 10));
   }
   if (Tmr_err.value() < 1000) Tmr_err.setValue(1000);
   if (stepIndex < 2) stepIndex = 2; 
-  if (Enter.isSingle()) {
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 2;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -843,19 +954,19 @@ void parkingSpeedF() {
     lcd.print((steps[stepIndex]));
     parkingSpeed.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     parkingSpeed.setValue(parkingSpeed.value() + (steps[stepIndex]));
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     parkingSpeed.setValue(parkingSpeed.value() - (steps[stepIndex]));
   }
   if (parkingSpeed.value() < 10) parkingSpeed.setValue(10);
-  if (Enter.isSingle()) {
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 0;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -868,13 +979,13 @@ void dirLF() {
     lcd.print(StatBool[dirBoolL]);
     dirL.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     dirL.setValue(1);
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     dirL.setValue(-1);
   }
   
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -887,13 +998,13 @@ void dirRF() {
     lcd.print(StatBool[dirBoolR]);
     dirR.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     dirR.setValue(1);
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     dirR.setValue(-1);
   }
   
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -910,19 +1021,19 @@ void parkingErrDis() {
     lcd.print((steps[stepIndex]));
     parkingErrorDistance.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     parkingErrorDistance.setValue(parkingErrorDistance.value() + (steps[stepIndex]));
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     parkingErrorDistance.setValue(parkingErrorDistance.value() - (steps[stepIndex]));
   }
   if (parkingErrorDistance.value() < 1) parkingErrorDistance.setValue(1); 
-  if (Enter.isSingle()) {
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 0;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
@@ -939,27 +1050,32 @@ void dissteps() {
     lcd.print((steps[stepIndex] / 10));
     disSteps.write();
   }
-  if ((Right.isPress()) || (Right.isStep())) {
+  if ((enc.right())) {
     disSteps.setValue(disSteps.value() + (steps[stepIndex] / 10));
-  } else if ((Left.isPress()) || (Left.isStep())) {
+  } else if ((enc.left())) {
     disSteps.setValue(disSteps.value() - (steps[stepIndex] / 10));
   }
   if (disSteps.value() < 1) disSteps.setValue(1);
-  if (Enter.isSingle()) {
+  if (Enter.isSingle() || (enc.click())) {
     if (stepIndex < n - 1)
       stepIndex = stepIndex + 1;
     else
       stepIndex = 0;
   }
-  if (Enter.isHold()) {
+  if (Enter.isHold()  || (enc.hold())) {
     modemenu = NoMode;
   }
 }
 void loop() {
-
-  Left.tick();
-  Right.tick();
-  Enter.tick();
+    
+  if (digitalRead(LockMenu)) {
+    NumMenuLock = 4;
+  } else {
+    NumMenuLock = 12;
+  }
+  StartButton.tick();
+  StopButton.tick();
+  enc.tick();
   
   if ((digitalRead(ENDCAP_L) != 0)) {
     EndCapStatL = true;
@@ -985,16 +1101,23 @@ void loop() {
     dirBoolR = 1;
   }
 
-  if ((Spindle == true) && (SpindleBlock.value() == true)) {
-    digitalWrite(SpindleS, true);
-    SpindleStat = Spindle;
+  if ((SpindleRight == true) && (SpindleBlock.value() == true)) {
+    digitalWrite(SpindleRIGHT, false);
+    SpindleStat = true;
   } else {
     SpindleStat = false;
-    digitalWrite(SpindleS, false);
+    digitalWrite(SpindleRIGHT, true);
+  }
+  if ((SpindleLeft == true) && (SpindleBlock.value() == true)) {
+    digitalWrite(SpindleLEFT, false);
+    SpindleStat = true;
+  } else {
+    SpindleStat = false;
+    digitalWrite(SpindleLEFT, true);
   }
   
-  // if (Right.isClick()) Serial.println("Button 1");
-  // if (Enter.isClick()) Serial.println("Button 2");
+  // if (StartButton.isClick()) Serial.println("Button 1");
+  // if (StopButton.isClick()) Serial.println("Button 2");
   //if (LimitSwitch.isClick()) Serial.println("Button 3");
   //Serial.println(CurrentMenu);
 
