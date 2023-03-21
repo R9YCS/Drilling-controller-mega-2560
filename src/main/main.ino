@@ -6,11 +6,13 @@
 #include "GyverStepper2.h"
 #include "GyverButton.h"
 #include "GyverTimers.h"
-#include <LiquidCrystal.h>
+// #include <LiquidCrystal.h>
+#include <LiquidCrystal_I2C.h>
 #include "EepromCell.h"
 #include <EncButton2.h>
 
-LiquidCrystal lcd(7, 6, 5, 4, 3, 2);
+// LiquidCrystal lcd(7, 6, 5, 4, 3, 2);
+LiquidCrystal_I2C lcd(0x3F,16,2);
 
 GStepper2<STEPPER2WIRE> stepperL(3200, 8, 10, 9);   // Левый мотор
 GStepper2<STEPPER2WIRE> stepperR(3200, 18, 19, 17); // Правый мотор
@@ -31,7 +33,7 @@ GButton StartButton(BTNL);
 GButton Enter(BTNE);
 GButton StopButton(BTNR);
 
-EncButton2<EB_ENCBTN> enc(INPUT_PULLUP, 21, 22, 23);  // энкодер с кнопкой
+EncButton2<EB_ENCBTN> enc(INPUT_PULLUP, 17, 22, 23);  // энкодер с кнопкой
 
 EepromCell Acceleration(500, 0);              // Ускорения
 EepromCell MaxSpeed(500, 5);                  // Скорость
@@ -144,7 +146,10 @@ void setup() {
 
   // Serial.begin(9600);
 
-  lcd.begin(16, 2);
+  // lcd.begin(16, 2);
+  lcd.init();
+  lcd.backlight();
+
 
   pinMode(ENDCAP_L, INPUT_PULLUP);
   pinMode(ENDCAP_R, INPUT_PULLUP);
