@@ -62,6 +62,7 @@ bool dirBoolR;
       bool leftEngineDoneDrilling = 0; 
       bool rightEngineDoneDrilling = 0; 
       bool stopFlag = 0;
+      bool stopParkingMode = 0;
 
 
 bool StartFlag = false;
@@ -267,49 +268,54 @@ void drilling() {
       stepperL.enable();
       stepperL.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirL.value()));
       
-      if (millis() - Tmr >= Tmr_err.value()) {
-        WorkID = 8;
-        ErrNum = 0;
-      }
+      // if (millis() - Tmr >= Tmr_err.value()) {
+      //   WorkID = 8;
+      //   ErrNum = 0;
+      // }
     }
-    if (Enter.isSingle() || enc.held() || enc.click() || StopButton.isSingle()) {
-      WorkID = 8;
-      ErrNum = 9;
-    }
+    // if (Enter.isSingle() || enc.held() || enc.click() || StopButton.isSingle()) {
+    //   WorkID = 8;
+    //   ErrNum = 9;
+    // }
   }
 
   if (WorkID == 1) {          //  Парковка правого двигателя
 
     if (digitalRead(ENDCAP_R)) {
-      WorkID = 2;
+      if (stopParkingMode == 0) {
+        WorkID = 2;
+      } else {
+        stopParkingMode = 0;
+        WorkID = 7; 
+      }
       stepperR.brake();
       stepperR.reset();
     } else {
       stepperR.enable();
       stepperR.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirR.value()));
 
-      if (millis() - Tmr >= Tmr_err.value()) {
-        WorkID = 8;
-        ErrNum = 1;
-      }
+      // if (millis() - Tmr >= Tmr_err.value()) {
+      //   WorkID = 8;
+      //   ErrNum = 1;
+      // }
     }
-    if (Enter.isSingle() || enc.held() || enc.click() || StopButton.isSingle()) {
-      WorkID = 8;
-      ErrNum = 9;
-    }
+    // if (Enter.isSingle() || enc.held() || enc.click() || StopButton.isSingle()) {
+    //   WorkID = 8;
+    //   ErrNum = 9;
+    // }
   }
 
   if (WorkID == 2) {          //  Сверление
     
     digitalWrite(LedStart, true);
 
-    if ((digitalRead(ENDCAP_L)) && (((stepperL.pos) * dirL.value()) > (parkingErrorDistance.value() * disSteps.value()))) {
-      WorkID = 8;
-      ErrNum = 2;
-    } else if ((digitalRead(ENDCAP_R)) && (((stepperR.pos) * dirR.value()) > (parkingErrorDistance.value() * disSteps.value()))) {
-      WorkID = 8;
-      ErrNum = 3;
-    }
+    // if ((digitalRead(ENDCAP_L)) && (((stepperL.pos) * dirL.value()) > (parkingErrorDistance.value() * disSteps.value()))) {
+    //   WorkID = 8;
+    //   ErrNum = 2;
+    // } else if ((digitalRead(ENDCAP_R)) && (((stepperR.pos) * dirR.value()) > (parkingErrorDistance.value() * disSteps.value()))) {
+    //   WorkID = 8;
+    //   ErrNum = 3;
+    // }
 
     if (leftEngineDoneDrilling == 0) {
       SpindleLeft = true; 
@@ -356,10 +362,10 @@ void drilling() {
           } else {
             stepperL.enable();
             stepperL.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirL.value()));
-            if (millis() - Tmr >= Tmr_err.value()) {
-              WorkID = 8;
-              ErrNum = 4;
-            }
+            // if (millis() - Tmr >= Tmr_err.value()) {
+            //   WorkID = 8;
+            //   ErrNum = 4;
+            // }
           }
         }
       } else {
@@ -372,10 +378,10 @@ void drilling() {
           } else {
             stepperL.enable();
             stepperL.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirL.value()));
-              if (millis() - Tmr >= Tmr_err.value()) {
-                WorkID = 8;
-                ErrNum = 4;
-              }
+              // if (millis() - Tmr >= Tmr_err.value()) {
+              //   WorkID = 8;
+              //   ErrNum = 4;
+              // }
             }
         }
       }
@@ -398,10 +404,10 @@ void drilling() {
             stepperR.enable();
             stepperR.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirR.value()));
 
-            if (millis() - Tmr >= Tmr_err.value()) {
-              WorkID = 8;
-              ErrNum = 5;
-            }
+            // if (millis() - Tmr >= Tmr_err.value()) {
+            //   WorkID = 8;
+            //   ErrNum = 5;
+            // }
           }
         }
       } else {
@@ -414,10 +420,10 @@ void drilling() {
           } else {
             stepperR.enable();
             stepperR.setSpeed((parkingSpeed.value() * disSteps.value()) * (-dirR.value()));
-            if (millis() - Tmr >= Tmr_err.value()) {
-              WorkID = 8;
-              ErrNum = 5;
-            }
+            // if (millis() - Tmr >= Tmr_err.value()) {
+            //   WorkID = 8;
+            //   ErrNum = 5;
+            // }
           }
         }
       }
@@ -428,15 +434,22 @@ void drilling() {
       SpindleLeft = false;
       SpindleRight = false;
     }
-    if (enc.held() || enc.click()) {
-      WorkID = 8;
-      ErrNum = 9;
-    }
+    // if (enc.held() || enc.click()) {
+    //   WorkID = 8;
+    //   ErrNum = 9;
+    // }
     stopFlag = StopButton.isClick();
     while(stopFlag) {
       StopButton.tick();
       StartButton.tick();
-      stopFlag = !StartButton.isClick();
+      if(StartButton.isHold()) {
+        SpindleLeft = false;
+        SpindleRight = false;
+        stopParkingMode = 1;
+        WorkID = 0;
+        stopFlag = 0;
+      }
+      // stopFlag = !StartButton.isClick();
     }  
   }
 
@@ -479,6 +492,7 @@ void drilling() {
 
     stepperL.disable();
     stepperR.disable();
+    stopParkingMode = 0;
     leftEngineDoneDrilling = 0;
     rightEngineDoneDrilling = 0;
     leftEngineParking = 0;
